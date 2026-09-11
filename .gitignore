@@ -47,3 +47,13 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+backend/data/
+backend/uploads/
+backend/.env
+.env
+.env.local
+
+# pnpm
+.pnpm-store/
+
+

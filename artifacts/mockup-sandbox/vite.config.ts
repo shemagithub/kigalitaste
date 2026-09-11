@@ -5,13 +5,7 @@ import path from "path";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
 import { mockupPreviewPlugin } from "./mockupPreviewPlugin";
 
-const rawPort = process.env.PORT;
-
-if (!rawPort) {
-  throw new Error(
-    "PORT environment variable is required but was not provided.",
-  );
-}
+const rawPort = process.env.PORT ?? "5173";
 
 const port = Number(rawPort);
 
@@ -19,12 +13,35 @@ if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
 
-const basePath = process.env.BASE_PATH;
+const basePath = process.env.BASE_PATH ?? "/";
 
-if (!basePath) {
-  throw new Error(
-    "BASE_PATH environment variable is required but was not provided.",
-  );
+/** Prefer live API; override with VITE_DEV_PROXY_TARGET=http://127.0.0.1:5050 for local backend. */
+const proxyTarget = (
+  process.env.VITE_DEV_PROXY_TARGET || "https://backend.kigalitaste.co"
+).replace(/\/$/, "");
+
+function backendProxy() {
+  return {
+    target: proxyTarget,
+    changeOrigin: true,
+    secure: true,
+    configure: (proxy: { on: (event: string, fn: (...args: unknown[]) => void) => void }) => {
+      proxy.on("error", (_err, _req, res) => {
+        const response = res as {
+          writeHead?: (code: number, headers: Record<string, string>) => void;
+          end?: (body: string) => void;
+          headersSent?: boolean;
+        };
+        if (!response?.writeHead || response.headersSent) return;
+        response.writeHead(503, { "Content-Type": "application/json" });
+        response.end?.(
+          JSON.stringify({
+            error: `Cannot reach API at ${proxyTarget}. Check the Node app or your network.`,
+          }),
+        );
+      });
+    },
+  };
 }
 
 export default defineConfig({
@@ -61,6 +78,12 @@ export default defineConfig({
     allowedHosts: true,
     fs: {
       strict: true,
+    },
+    proxy: {
+      "/api": backendProxy(),
+      "/uploads": backendProxy(),
+      "/robots.txt": backendProxy(),
+      "/sitemap.xml": backendProxy(),
     },
   },
   preview: {

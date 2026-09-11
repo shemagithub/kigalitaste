@@ -1,0 +1,8 @@
+Options -MultiViews
+RewriteEngine On
+Redirect 302 /robots.txt https://backend.kigalitaste.co/robots.txt
+Redirect 302 /sitemap.xml https://backend.kigalitaste.co/sitemap.xml
+Redirect 302 /favicon.ico https://backend.kigalitaste.co/api/brand/icon
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^ index.html [L]
