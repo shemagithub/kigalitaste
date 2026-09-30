@@ -1,7 +1,7 @@
 import { Link } from "wouter";
 import { useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { ExternalLink, FileText, ImagePlus, Link2, UserRound, X } from "lucide-react";
-import { frw, img, apiUrl, API_BASE } from "@/lib/api";
+import { frw, img, apiUrl } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 export type BtnVariant = "primary" | "light" | "outline" | "ghost" | "panel" | "destructive";
@@ -112,9 +112,6 @@ export function BrandName({
   );
 }
 
-const DEFAULT_FAVICON =
-  "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🍽️</text></svg>";
-
 function faviconType(href: string) {
   const clean = href.split("?")[0].toLowerCase();
   if (clean.startsWith("data:image/svg") || clean.endsWith(".svg") || clean.includes("/api/brand/icon")) {
@@ -152,13 +149,8 @@ export function applyBrandAssets(settings?: Record<string, string> | null) {
   const raw = String(settings?.faviconUrl || settings?.logoUrl || "").trim();
   const stamp = encodeURIComponent((raw || "default").slice(-32));
 
-  // Prefer the API brand-icon endpoint so hosted frontend (kigalitaste.co) always
-  // hits the backend subdomain with a stable URL (and SVG fallback if file missing).
-  const href = API_BASE
-    ? apiUrl(`/api/brand/icon?v=${stamp}`)
-    : raw
-      ? img(raw)
-      : DEFAULT_FAVICON;
+  // Same-origin brand icon so phones never need a certificate on the API host.
+  const href = apiUrl(`/api/brand/icon?v=${stamp}`);
 
   setBrandIconLinks(href);
 

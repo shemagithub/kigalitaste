@@ -1,6 +1,6 @@
 import { Download, ExternalLink, FileText, Paperclip } from "lucide-react";
 import { toast } from "sonner";
-import { apiUrl, getToken } from "@/lib/api";
+import { apiFetch, getToken } from "@/lib/api";
 
 export type MailAttachment = {
   id: number;
@@ -28,8 +28,7 @@ function fileIcon(mimeType: string) {
 
 async function fetchAttachment(att: MailAttachment, inline: boolean) {
   const token = getToken();
-  const url = apiUrl(`/api/admin/mailbox/attachments/${att.id}${inline ? "?inline=1" : ""}`);
-  const res = await fetch(url, {
+  const res = await apiFetch(`/api/admin/mailbox/attachments/${att.id}${inline ? "?inline=1" : ""}`, {
     headers: token ? { Authorization: `Bearer ${token}` } : {},
   });
   if (!res.ok) {

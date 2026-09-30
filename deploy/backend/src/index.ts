@@ -9,9 +9,9 @@ async function main() {
   const { default: app } = await import("./app.ts");
   const port = Number(process.env.PORT || 5050);
 
-  app.listen(port, () => {
+  app.listen(port, "0.0.0.0", () => {
     console.log("");
-    console.log("Kigali Taste API  http://localhost:" + port);
+    console.log("Kigali Taste API  http://0.0.0.0:" + port);
     console.log("Customer site     http://localhost:5173/");
     console.log("Admin login       http://localhost:5173/admin/login");
     console.log("                  admin@kigalitaste.rw / admin123");

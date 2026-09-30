@@ -1,8 +1,21 @@
-URLs
-----
-Frontend: https://kigalitaste.co/          ← upload kigali-taste-frontend.zip to public_html
-API:      https://backend.kigalitaste.co/  ← Node app, startup file = app.cjs
+KIGALI TASTE — cPanel upload
+============================
 
-1) Fix Node app startup file → app.cjs, Run NPM Install, Restart
-2) Upload new frontend zip over public_html (API calls go to backend subdomain)
-3) Set .env PUBLIC_APP_URL=https://kigalitaste.co
+Two zip files:
+
+  kigali-taste-frontend.zip  →  public_html  (kigalitaste.co)
+  kigali-taste-backend.zip   →  Node.js app  (backend.kigalitaste.co)
+
+FRONTEND
+  Unzip and upload everything into public_html.
+  Show hidden files and keep .htaccess + proxy.php.
+  Do not force HTTPS if some phones have no SSL.
+
+BACKEND
+  Unzip into the Node app folder.
+  Startup file = app.cjs
+  Run NPM Install, then Restart.
+  Keep your current .env (MySQL + mail secrets).
+
+After both are uploaded, open kigalitaste.co on a phone and confirm
+the home page, a restaurant, and login load.

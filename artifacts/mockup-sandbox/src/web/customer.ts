@@ -396,7 +396,8 @@ export const CATEGORY_LOOKS: { key: string; label: string; match: RegExp; photo:
 ];
 
 export function categoriesFromItems(items: MenuItem[]) {
-  return CATEGORY_LOOKS.filter((look) =>
-    items.some((i) => look.match.test(`${i.name} ${i.categoryName || ""}`)),
-  );
+  return CATEGORY_LOOKS.flatMap((look) => {
+    const count = items.filter((i) => look.match.test(`${i.name} ${i.categoryName || ""}`)).length;
+    return count > 0 ? [{ ...look, count }] : [];
+  });
 }

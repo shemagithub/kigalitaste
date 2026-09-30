@@ -96,8 +96,19 @@ import {
 
 const app = express();
 app.set("etag", false);
-app.use(cors({ origin: true, credentials: true }));
+app.set("trust proxy", true);
+app.disable("x-powered-by");
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept", "X-Requested-With"],
+    maxAge: 86400,
+  }),
+);
 app.use((req, res, next) => {
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   if (req.path.startsWith("/api")) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     res.setHeader("Pragma", "no-cache");
@@ -149,6 +160,8 @@ app.use(
   "/uploads",
   express.static(uploadsDir, {
     setHeaders(res, filePath) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
       const lower = filePath.toLowerCase();
       if (lower.endsWith(".pdf")) {
         res.setHeader("Content-Type", "application/pdf");
@@ -2419,6 +2432,63 @@ app.get("/api/admin/restaurants", requireAuth, requireRole("admin"), async (_req
        ORDER BY r.name`,
     ),
   );
+});
+
+app.post("/api/admin/restaurants/:id/visibility", requireAuth, requireRole("admin"), async (req, res) => {
+  const restaurant = await one<{
+    id: number;
+    isLive: number;
+    isOpen: number;
+    vendorId: number;
+  }>("SELECT id, isLive, isOpen, vendorId FROM restaurants WHERE id = ?", [req.params.id]);
+  if (!restaurant) {
+    fail(res, 404, "Restaurant not found");
+    return;
+  }
+  const vendor = await one<{ status: string; suspended: number }>(
+    "SELECT status, suspended FROM vendors WHERE id = ?",
+    [restaurant.vendorId],
+  );
+  if (!vendor) {
+    fail(res, 404, "Vendor not found");
+    return;
+  }
+
+  let isLive = restaurant.isLive;
+  let isOpen = restaurant.isOpen;
+  if (typeof req.body?.isLive === "boolean") {
+    if (req.body.isLive) {
+      if (vendor.status !== "APPROVED") {
+        fail(res, 400, "Approve the vendor before putting this kitchen live");
+        return;
+      }
+      if (vendor.suspended) {
+        fail(res, 400, "Unsuspend the vendor before putting this kitchen live");
+        return;
+      }
+      const items = await count("SELECT COUNT(*) AS n FROM menu_items WHERE restaurantId = ?", [restaurant.id]);
+      if (items < 1) {
+        fail(res, 400, "Add at least one menu item before putting this kitchen live");
+        return;
+      }
+    }
+    isLive = req.body.isLive ? 1 : 0;
+  }
+  if (typeof req.body?.isOpen === "boolean") {
+    isOpen = req.body.isOpen ? 1 : 0;
+  }
+
+  await run("UPDATE restaurants SET isLive = ?, isOpen = ? WHERE id = ?", [isLive, isOpen, restaurant.id]);
+  const row = await one(
+    `SELECT r.*, v.businessName, v.status AS vendorStatus, v.suspended,
+            (SELECT COUNT(*) FROM menu_items m WHERE m.restaurantId = r.id) AS menuCount,
+            (SELECT COUNT(*) FROM orders o WHERE o.restaurantId = r.id) AS orderCount
+     FROM restaurants r
+     JOIN vendors v ON v.id = r.vendorId
+     WHERE r.id = ?`,
+    [restaurant.id],
+  );
+  res.json({ ok: true, restaurant: row });
 });
 
 app.get("/api/admin/restaurants/:id/menu", requireAuth, requireRole("admin"), async (req, res) => {

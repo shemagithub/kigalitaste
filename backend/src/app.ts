@@ -96,8 +96,19 @@ import {
 
 const app = express();
 app.set("etag", false);
-app.use(cors({ origin: true, credentials: true }));
+app.set("trust proxy", true);
+app.disable("x-powered-by");
+app.use(
+  cors({
+    origin: true,
+    credentials: true,
+    methods: ["GET", "HEAD", "PUT", "PATCH", "POST", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization", "Accept", "X-Requested-With"],
+    maxAge: 86400,
+  }),
+);
 app.use((req, res, next) => {
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
   if (req.path.startsWith("/api")) {
     res.setHeader("Cache-Control", "no-store, no-cache, must-revalidate");
     res.setHeader("Pragma", "no-cache");
@@ -149,6 +160,8 @@ app.use(
   "/uploads",
   express.static(uploadsDir, {
     setHeaders(res, filePath) {
+      res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
       const lower = filePath.toLowerCase();
       if (lower.endsWith(".pdf")) {
         res.setHeader("Content-Type", "application/pdf");

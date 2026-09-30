@@ -15,16 +15,17 @@ if (Number.isNaN(port) || port <= 0) {
 
 const basePath = process.env.BASE_PATH ?? "/";
 
-/** Prefer live API; override with VITE_DEV_PROXY_TARGET=http://127.0.0.1:5050 for local backend. */
+/** Local API by default; override with VITE_DEV_PROXY_TARGET=http://backend.kigalitaste.co */
 const proxyTarget = (
-  process.env.VITE_DEV_PROXY_TARGET || "https://backend.kigalitaste.co"
+  process.env.VITE_DEV_PROXY_TARGET || "http://127.0.0.1:5050"
 ).replace(/\/$/, "");
 
 function backendProxy() {
   return {
     target: proxyTarget,
     changeOrigin: true,
-    secure: true,
+    // Backend may have no SSL cert (phones / some networks). Never require one here.
+    secure: false,
     configure: (proxy: { on: (event: string, fn: (...args: unknown[]) => void) => void }) => {
       proxy.on("error", (_err, _req, res) => {
         const response = res as {
@@ -90,5 +91,11 @@ export default defineConfig({
     port,
     host: "0.0.0.0",
     allowedHosts: true,
+    proxy: {
+      "/api": backendProxy(),
+      "/uploads": backendProxy(),
+      "/robots.txt": backendProxy(),
+      "/sitemap.xml": backendProxy(),
+    },
   },
 });
