@@ -1,7 +1,6 @@
 import { useEffect } from "react";
 import { Toaster } from "sonner";
 import { useLocation } from "wouter";
-import { AuthProvider } from "./lib/auth";
 import { PublicApp } from "./web/PublicApp";
 import { VendorApp } from "./web/VendorApp";
 import { AdminApp } from "./web/AdminApp";
@@ -32,11 +31,11 @@ function Routed() {
 
 export default function App() {
   return (
-    <AuthProvider>
+    <>
       <SeoManager />
       <ScrollToTop />
       <Routed />
       <Toaster position="top-center" richColors />
-    </AuthProvider>
+    </>
   );
 }

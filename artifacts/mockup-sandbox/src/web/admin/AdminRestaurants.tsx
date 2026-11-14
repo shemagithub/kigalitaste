@@ -1,13 +1,15 @@
 import { useEffect, useState } from "react";
-import { Link } from "wouter";
+import { Link, useLocation } from "wouter";
 import { toast } from "sonner";
 import { api, img } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { bumpCatalog } from "../catalog";
 import { Btn, Card, Empty } from "../ui";
 import { AdminGuide, StatusChip } from "./AdminUi";
 
 type RestaurantRow = {
   id: number;
+  vendorId: number;
   name: string;
   slug: string;
   type: string;
@@ -25,8 +27,11 @@ type RestaurantRow = {
 };
 
 export function AdminRestaurants() {
+  const [, setLoc] = useLocation();
+  const { openVendorPanel } = useAuth();
   const [rows, setRows] = useState<RestaurantRow[]>([]);
   const [busyId, setBusyId] = useState<number | null>(null);
+  const [openingId, setOpeningId] = useState<number | null>(null);
   const [filter, setFilter] = useState<"all" | "live" | "offline">("all");
 
   async function reload() {
@@ -72,8 +77,9 @@ export function AdminRestaurants() {
         <p className="font-bold">Restaurant control</p>
         <p className="mt-1 text-muted-foreground">
           Put a kitchen <strong>Live</strong> so customers can find it, or <strong>Offline</strong> to hide it from the
-          site. Open/Closed only changes whether it accepts orders while it is live. Suspended vendors stay hidden until
-          you unsuspend them.
+          site. Open/Closed only changes whether it accepts orders while it is live.{" "}
+          <strong>Open vendor panel</strong> signs you into that kitchen with no password. Suspended vendors stay hidden
+          until you unsuspend them.
         </p>
       </AdminGuide>
 
@@ -207,6 +213,26 @@ export function AdminRestaurants() {
                       Manage menu
                     </Btn>
                   </Link>
+                  <Btn
+                    variant="panel"
+                    className="text-sm"
+                    disabled={openingId === r.id || !r.vendorId}
+                    onClick={async () => {
+                      if (!r.vendorId || openingId) return;
+                      setOpeningId(r.id);
+                      try {
+                        const { vendorName } = await openVendorPanel(r.vendorId);
+                        toast.success(`Opened ${vendorName} — no password needed`);
+                        setLoc("/vendor/dashboard");
+                      } catch (err) {
+                        toast.error((err as Error).message);
+                      } finally {
+                        setOpeningId(null);
+                      }
+                    }}
+                  >
+                    {openingId === r.id ? "Opening…" : "Open vendor panel"}
+                  </Btn>
                 </div>
               </Card>
             );

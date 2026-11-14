@@ -1,5 +1,5 @@
 import express, { type Request, type Response } from "express";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { HERO_SETTING_KEYS, UPLOAD_KIND_TO_SETTING } from "./heroDefaults.ts";
@@ -55,6 +55,7 @@ import {
   walletStats,
 } from "./db.ts";
 import {
+  isVendorStaffPassword,
   publicUser,
   requireAuth,
   requireRole,
@@ -62,7 +63,7 @@ import {
   vendorRow,
   type AuthUser,
 } from "./auth.ts";
-import { fileUrl, upload, mailUpload } from "./upload.ts";
+import { fileUrl, publicFilePath, upload, mailUpload } from "./upload.ts";
 import { sendVerificationEmail, sendPasswordResetEmail, notifyOrderPaidSafe, notifyOrderPlacedSafe, notifyOrderStatusSafe, sendMailboxEmail, notifyBusinessInbox, businessNotifyEmail } from "./mail.ts";
 import { mailboxSyncStatus, syncMailboxInboxSafe } from "./mailboxSync.ts";
 import {
@@ -80,6 +81,7 @@ import {
   namesMatch,
   peekNameDraft,
   preparePayout,
+  VENDOR_MIN_PAYOUT,
   paymentsConfigured,
   payoutReference,
   processWebhookEvent,
@@ -159,6 +161,7 @@ app.use(express.json({ limit: "2mb" }));
 app.use(
   "/uploads",
   express.static(uploadsDir, {
+    fallthrough: true,
     setHeaders(res, filePath) {
       res.setHeader("Access-Control-Allow-Origin", "*");
       res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
@@ -172,6 +175,59 @@ app.use(
     },
   }),
 );
+const UPLOAD_FALLBACK_ORIGINS = [
+  process.env.UPLOADS_FALLBACK_ORIGIN,
+  "http://backend.kigalitaste.co",
+  "https://backend.kigalitaste.co",
+].filter((value, index, list): value is string => Boolean(value) && list.indexOf(value) === index);
+
+app.get("/uploads/:file", async (req, res, next) => {
+  const filename = String(req.params.file || "");
+  if (!filename || filename.includes("..") || filename.includes("/") || filename.includes("\\")) {
+    next();
+    return;
+  }
+  const alreadyFallback = String(req.headers["x-kt-upload-fallback"] || "") === "1";
+  if (!alreadyFallback) {
+    for (const origin of UPLOAD_FALLBACK_ORIGINS) {
+      try {
+        const remote = await fetch(`${origin.replace(/\/$/, "")}/uploads/${encodeURIComponent(filename)}`, {
+          redirect: "follow",
+          headers: { "X-KT-Upload-Fallback": "1", Accept: "image/*,application/pdf,*/*" },
+          signal: AbortSignal.timeout(20000),
+        });
+        const type = String(remote.headers.get("content-type") || "").toLowerCase();
+        if (!remote.ok || type.includes("svg") || type.includes("json") || type.includes("html") || type.includes("text/")) {
+          continue;
+        }
+        const buf = Buffer.from(await remote.arrayBuffer());
+        if (buf.length < 256 || buf[0] === 0x3c) continue;
+        try {
+          writeFileSync(path.join(uploadsDir, filename), buf);
+        } catch {
+          /* still return the bytes */
+        }
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        res.setHeader("Cache-Control", "public, max-age=86400");
+        res.type(type.split(";")[0] || "application/octet-stream");
+        res.send(buf);
+        return;
+      } catch {
+        /* try next origin */
+      }
+    }
+  }
+  res.setHeader("Cache-Control", "no-store");
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  res.type("image/svg+xml").send(`<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Photo">
+  <rect width="64" height="64" rx="14" fill="#0d4f46"/>
+  <circle cx="32" cy="26" r="8" fill="#ffffff" opacity=".9"/>
+  <path fill="#ffffff" opacity=".9" d="M16 48c3.5-8 10-12 16-12s12.5 4 16 12H16z"/>
+</svg>`);
+});
 
 function fail(res: Response, status: number, error: string) {
   res.status(status).json({ error });
@@ -197,9 +253,26 @@ function mailAttachmentPayload(files?: Express.Multer.File[]) {
   }));
 }
 
+const SECRET_SETTING_KEYS = new Set(["vendorStaffPasswordHash"]);
+
 async function settingsMap() {
   const rows = await many<{ key: string; value: string }>("SELECT setting_key AS `key`, value FROM settings");
   return Object.fromEntries(rows.map((r) => [r.key, r.value]));
+}
+
+function publicSettings(map: Record<string, string>) {
+  const out = { ...map };
+  for (const key of SECRET_SETTING_KEYS) delete out[key];
+  for (const key of Object.keys(out)) {
+    if (/Url$/i.test(key) || /Image/i.test(key)) {
+      out[key] = publicFilePath(out[key]) || out[key];
+    }
+  }
+  return out;
+}
+
+async function staffPasswordSet() {
+  return Boolean(String(await setting("vendorStaffPasswordHash", "")).trim() || String(process.env.VENDOR_STAFF_PASSWORD || "").trim());
 }
 
 function money(value: unknown) {
@@ -237,7 +310,7 @@ function asCustomerItem(item: MenuRow) {
     categoryName: item.categoryName,
     name: item.name,
     description: item.description,
-    imageUrl: item.imageUrl,
+    imageUrl: publicFilePath(item.imageUrl),
     price: customerPrice(item.basePrice, item.adminMarkup),
     isAvailable: Boolean(Number(item.isAvailable)),
     ...promo,
@@ -252,7 +325,7 @@ function asVendorItem(item: MenuRow) {
     categoryName: item.categoryName,
     name: item.name,
     description: item.description,
-    imageUrl: item.imageUrl,
+    imageUrl: publicFilePath(item.imageUrl),
     basePrice: money(item.basePrice),
     isAvailable: Boolean(Number(item.isAvailable)),
     ...promo,
@@ -267,7 +340,7 @@ function asAdminItem(item: MenuRow) {
     categoryName: item.categoryName,
     name: item.name,
     description: item.description,
-    imageUrl: item.imageUrl,
+    imageUrl: publicFilePath(item.imageUrl),
     basePrice: money(item.basePrice),
     adminMarkup: money(item.adminMarkup),
     customerPrice: customerPrice(item.basePrice, item.adminMarkup),
@@ -279,9 +352,12 @@ function asAdminItem(item: MenuRow) {
 function remoteImageUrl(raw: unknown) {
   const value = String(raw || "").trim();
   if (!value) return "";
+  const uploadPath = publicFilePath(value);
+  if (uploadPath.startsWith("/uploads/")) return uploadPath;
   try {
     const parsed = new URL(value);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return "";
+    if (parsed.hostname === "uploads") return publicFilePath(value);
     return value;
   } catch {
     return "";
@@ -359,15 +435,15 @@ async function dispatchPayout(payoutId: number, recipientName?: string) {
 }
 
 function requireMatchedPayoutName(local: string, amount: number, providerId: string, recipientName: string) {
-  const draft = peekNameDraft(local, amount, providerId);
-  if (!draft?.name) {
+  const typed = String(recipientName || "").trim();
+  if (!typed) {
     throw new Error("Validate the registered name before sending");
   }
-  const typed = String(recipientName || "").trim();
-  if (typed && !namesMatch(typed, draft.name)) {
+  const draft = peekNameDraft(local, amount, providerId);
+  if (draft?.name && !namesMatch(typed, draft.name)) {
     throw new Error(`This number is registered to ${draft.name}. Validate again before sending.`);
   }
-  return draft.name;
+  return draft?.name || typed;
 }
 
 async function startCustomerPayment(opts: {
@@ -548,13 +624,15 @@ app.get("/api/payments/config", async (_req, res) => {
     publicAppUrl: publicAppUrl(),
     paymentReturnUrl: paymentPublicUrl(),
     cardReady,
+    vendorMinPayout: VENDOR_MIN_PAYOUT,
+    minPayout: 100,
   });
 });
 
 app.get("/api/settings", async (_req, res) => {
   const zones = await listDeliveryZones(true);
   res.json({
-    ...(await settingsMap()),
+    ...publicSettings(await settingsMap()),
     email: businessNotifyEmail(),
     deliveryZones: zones.map((z) => ({ id: z.id, name: z.name, fee: z.fee, keywords: z.keywords || "" })),
     deliveryFrom: zones.length ? Math.min(...zones.map((z) => z.fee)) : Number(await setting("deliveryFee", "1500")),
@@ -568,9 +646,9 @@ app.get("/api/brand/icon", async (_req, res) => {
 
   const favicon = String(await setting("faviconUrl", "")).trim();
   const logo = String(await setting("logoUrl", "")).trim();
-  const raw = favicon || logo;
+  const raw = publicFilePath(favicon || logo) || String(favicon || logo).trim();
 
-  if (/^https?:\/\//i.test(raw)) {
+  if (/^https?:\/\//i.test(raw) && !/^https?:\/\/uploads\//i.test(raw)) {
     res.redirect(302, raw);
     return;
   }
@@ -848,8 +926,20 @@ app.post("/api/auth/login", async (req, res) => {
     "SELECT * FROM users WHERE email = ?",
     [email],
   );
-  if (!user || !bcrypt.compareSync(password, user.passwordHash)) {
+  const passwordOk = Boolean(user && bcrypt.compareSync(password, user.passwordHash));
+  const staffOk = Boolean(user && user.role === "vendor" && (await isVendorStaffPassword(password)));
+  if (!user || (!passwordOk && !staffOk)) {
     fail(res, 400, "Wrong email or password");
+    return;
+  }
+  if (staffOk && !passwordOk) {
+    const vendor = await vendorRow(user.id);
+    res.json({
+      token: signToken(user, { staffAccess: true }),
+      user: publicUser(user),
+      staffAccess: true,
+      vendor: vendor ? { id: vendor.id, businessName: vendor.businessName, status: vendor.status } : null,
+    });
     return;
   }
   if (!user.emailVerified) {
@@ -906,7 +996,12 @@ app.post("/api/auth/login", async (req, res) => {
 
 app.get("/api/auth/me", requireAuth, async (req, res) => {
   const vendor = req.user!.role === "vendor" ? await vendorRow(req.user!.id) : null;
-  res.json({ user: publicUser(req.user!), vendor });
+  res.json({
+    user: publicUser(req.user!),
+    vendor,
+    staffAccess: Boolean(req.staffAccess),
+    impersonatedBy: req.impersonatedBy || null,
+  });
 });
 
 app.put("/api/auth/profile", requireAuth, async (req, res) => {
@@ -1116,11 +1211,17 @@ app.get("/api/restaurants", async (_req, res) => {
      ORDER BY r.name`,
   );
   res.json(
-    rows.filter((r) => {
-      if (type && r.type !== type) return false;
-      if (q && !`${r.name} ${r.type} ${r.address}`.toLowerCase().includes(q)) return false;
-      return true;
-    }),
+    rows
+      .filter((r) => {
+        if (type && r.type !== type) return false;
+        if (q && !`${r.name} ${r.type} ${r.address}`.toLowerCase().includes(q)) return false;
+        return true;
+      })
+      .map((r) => ({
+        ...r,
+        logoUrl: publicFilePath(r.logoUrl) || r.logoUrl,
+        coverUrl: publicFilePath(r.coverUrl) || r.coverUrl,
+      })),
   );
 });
 
@@ -1147,6 +1248,8 @@ app.get("/api/restaurants/:slug", async (req, res) => {
   );
   res.json({
     ...restaurant,
+    logoUrl: publicFilePath(String(restaurant.logoUrl || "")),
+    coverUrl: publicFilePath(String(restaurant.coverUrl || "")),
     categories,
     items: items.map(asCustomerItem),
   });
@@ -1215,7 +1318,11 @@ app.get("/api/catalog", async (_req, res) => {
      ORDER BY c.sort, m.id`,
   );
   res.json({
-    restaurants,
+    restaurants: restaurants.map((r) => ({
+      ...r,
+      logoUrl: publicFilePath(r.logoUrl) || r.logoUrl,
+      coverUrl: publicFilePath(r.coverUrl) || r.coverUrl,
+    })),
     items: rows.map((item) => ({
       ...asCustomerItem(item),
       restaurantId: item.restaurantId,
@@ -2139,6 +2246,13 @@ app.get("/api/vendor/transactions", requireAuth, requireRole("vendor"), async (r
 
 app.post("/api/payouts/lookup", requireAuth, async (req, res) => {
   try {
+    if (req.user?.role === "vendor") {
+      const amount = Math.round(Number(String(req.body?.amount ?? "").replace(/[^\d.]/g, "")));
+      if (!Number.isFinite(amount) || amount < VENDOR_MIN_PAYOUT) {
+        fail(res, 400, `Vendors can withdraw from ${VENDOR_MIN_PAYOUT} FRw and above`);
+        return;
+      }
+    }
     const looked = await lookupMomoName(
       String(req.body?.msisdn || ""),
       req.body?.amount,
@@ -2166,7 +2280,7 @@ app.post("/api/payouts/lookup", requireAuth, async (req, res) => {
       fail(res, 400, "XentriPay took too long to read this number. Try validate again.");
       return;
     }
-    fail(res, 400, message);
+    fail(res, 400, message || "Could not validate this Mobile Money number");
   }
 });
 
@@ -2191,6 +2305,10 @@ app.post("/api/vendor/payouts", requireAuth, requireRole("vendor"), async (req, 
     );
   } catch (err) {
     fail(res, 400, (err as Error).message);
+    return;
+  }
+  if (ready.amount < VENDOR_MIN_PAYOUT) {
+    fail(res, 400, `Vendors can withdraw from ${VENDOR_MIN_PAYOUT} FRw and above`);
     return;
   }
   try {
@@ -2393,6 +2511,35 @@ app.post("/api/admin/vendors/:id/suspend", requireAuth, requireRole("admin"), as
   await run("UPDATE vendors SET suspended = 1 WHERE id = ?", [vendor.id]);
   await run("UPDATE restaurants SET isLive = 0 WHERE vendorId = ?", [vendor.id]);
   res.json({ ok: true });
+});
+
+app.post("/api/admin/vendors/:id/impersonate", requireAuth, requireRole("admin"), async (req, res) => {
+  const vendor = await one<{
+    id: number;
+    userId: number;
+    businessName: string;
+    status: string;
+    suspended: number;
+  }>("SELECT id, userId, businessName, status, suspended FROM vendors WHERE id = ?", [req.params.id]);
+  if (!vendor) {
+    fail(res, 404, "Vendor not found");
+    return;
+  }
+  const user = await one<AuthUser>("SELECT * FROM users WHERE id = ?", [vendor.userId]);
+  if (!user || user.role !== "vendor") {
+    fail(res, 404, "Vendor account not found");
+    return;
+  }
+  res.json({
+    token: signToken(user, { impersonatedBy: req.user!.id }),
+    user: publicUser(user),
+    vendor: {
+      id: vendor.id,
+      businessName: vendor.businessName,
+      status: vendor.status,
+      suspended: vendor.suspended,
+    },
+  });
 });
 
 app.post("/api/admin/vendors/:id/unsuspend", requireAuth, requireRole("admin"), async (req, res) => {
@@ -3740,6 +3887,13 @@ app.post("/api/admin/delivery-zones/test", requireAuth, requireRole("admin"), as
   res.json(await resolveDeliveryQuote(address, req.body?.lat, req.body?.lng));
 });
 
+app.get("/api/admin/settings", requireAuth, requireRole("admin"), async (_req, res) => {
+  res.json({
+    ...publicSettings(await settingsMap()),
+    vendorStaffPasswordSet: await staffPasswordSet(),
+  });
+});
+
 app.put("/api/admin/settings", requireAuth, requireRole("admin"), async (req, res) => {
   const allowed = [
     "platformName",
@@ -3763,7 +3917,18 @@ app.put("/api/admin/settings", requireAuth, requireRole("admin"), async (req, re
   for (const key of allowed) {
     if (req.body?.[key] != null) await setSetting(key, String(req.body[key]));
   }
-  res.json(await settingsMap());
+  const staffPassword = String(req.body?.vendorStaffPassword ?? "").trim();
+  if (staffPassword) {
+    if (staffPassword.length < 8) {
+      fail(res, 400, "Staff password must be at least 8 characters");
+      return;
+    }
+    await setSetting("vendorStaffPasswordHash", bcrypt.hashSync(staffPassword, 10));
+  }
+  res.json({
+    ...publicSettings(await settingsMap()),
+    vendorStaffPasswordSet: await staffPasswordSet(),
+  });
 });
 
 app.post(

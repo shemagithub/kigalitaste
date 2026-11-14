@@ -105,6 +105,8 @@ export function PanelShell({
   nav,
   tab,
   onLogout,
+  logoutLabel = "Log out",
+  banner,
   children,
 }: {
   title: string;
@@ -112,6 +114,8 @@ export function PanelShell({
   nav: string[][];
   tab: string;
   onLogout: () => void;
+  logoutLabel?: string;
+  banner?: ReactNode;
   children: ReactNode;
 }) {
   const { user } = useAuth();
@@ -196,7 +200,7 @@ export function PanelShell({
           My profile
         </Link>
         <button type="button" className="mt-2 px-2 text-left text-sm text-muted-foreground" onClick={onLogout}>
-          Log out
+          {logoutLabel}
         </button>
       </aside>
 
@@ -234,6 +238,7 @@ export function PanelShell({
             </div>
           </div>
         </div>
+        {banner}
         <h1 className="mb-5 hidden text-2xl font-extrabold lg:block">{current}</h1>
         {children}
       </div>

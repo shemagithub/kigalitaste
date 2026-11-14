@@ -51,13 +51,18 @@ const ADMIN_PAGES = ADMIN_NAV.map(([id]) => id);
 
 export function AdminApp() {
   const [loc, setLoc] = useLocation();
-  const { user, logout, ready } = useAuth();
+  const { user, logout, ready, returnToAdmin } = useAuth();
   const path = (loc.split("?")[0] || "/admin").replace(/\/$/, "") || "/admin";
   const slug = path.replace(/^\/admin\/?/, "") || "dashboard";
   const tab = ADMIN_PAGES.includes(slug) ? slug : "dashboard";
 
   useEffect(() => {
-    if (!ready || path === "/admin/login") return;
+    if (!ready) return;
+    if (user?.role !== "admin" && returnToAdmin()) {
+      if (path === "/admin/login") setLoc("/admin/vendors");
+      return;
+    }
+    if (path === "/admin/login") return;
     if (slug === "markup") {
       setLoc("/admin/menus");
       return;
@@ -65,7 +70,7 @@ export function AdminApp() {
     if (path === "/admin" || !ADMIN_PAGES.includes(slug)) {
       setLoc("/admin/dashboard");
     }
-  }, [ready, path, slug, setLoc]);
+  }, [ready, path, slug, setLoc, user, returnToAdmin]);
 
   if (!ready) return null;
   if (path === "/admin/login" || !user || user.role !== "admin") {
@@ -167,9 +172,26 @@ type VendorRow = {
 };
 
 function Vendors() {
+  const [, setLoc] = useLocation();
+  const { openVendorPanel } = useAuth();
   const [tab, setTab] = useState("PENDING_APPROVAL");
   const [rows, setRows] = useState<VendorRow[]>([]);
   const [reason, setReason] = useState("Documents not clear");
+  const [openingId, setOpeningId] = useState<number | null>(null);
+
+  async function openPanel(vendor: VendorRow) {
+    if (openingId) return;
+    setOpeningId(vendor.id);
+    try {
+      const { vendorName } = await openVendorPanel(vendor.id);
+      toast.success(`Opened ${vendorName} — no password needed`);
+      setLoc("/vendor/dashboard");
+    } catch (err) {
+      toast.error((err as Error).message);
+    } finally {
+      setOpeningId(null);
+    }
+  }
   async function reload() {
     const data = await api<VendorRow[]>(
       tab === "SUSPENDED" ? "/api/admin/vendors?status=APPROVED" : `/api/admin/vendors?status=${tab}`,
@@ -185,8 +207,9 @@ function Vendors() {
       <AdminGuide>
         <p className="font-bold">Vendor onboarding</p>
         <p className="mt-1 text-muted-foreground">
-          Review documents, approve to create their shop, or reject with a reason. Suspend approved vendors to hide their
-          kitchen from customers without deleting their account.
+          Review documents, approve to create their shop, or reject with a reason. Use{" "}
+          <strong>Open vendor panel</strong> to sign into their control panel from here — you do not need their
+          password. Suspend approved vendors to hide their kitchen from customers without deleting their account.
         </p>
       </AdminGuide>
 
@@ -224,6 +247,15 @@ function Vendors() {
           <div className="grid gap-3 sm:grid-cols-2">
             <DocViewer label="National ID" src={v.nationalIdUrl} />
             <DocViewer label="RDB certificate" src={v.rdbCertificateUrl} />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Btn
+              variant="panel"
+              disabled={openingId === v.id}
+              onClick={() => void openPanel(v)}
+            >
+              {openingId === v.id ? "Opening…" : "Open vendor panel"}
+            </Btn>
           </div>
           {tab === "PENDING_APPROVAL" && (
             <div className="flex flex-wrap items-end gap-2">
@@ -607,9 +639,17 @@ function Settings() {
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [logoLink, setLogoLink] = useState("");
   const [saving, setSaving] = useState(false);
+  const [staffPassword, setStaffPassword] = useState("");
+  const [staffPasswordSet, setStaffPasswordSet] = useState(false);
 
   useEffect(() => {
-    api<Record<string, string>>("/api/settings").then(setS).catch((e) => toast.error(e.message));
+    api<Record<string, string> & { vendorStaffPasswordSet?: boolean | string }>("/api/admin/settings")
+      .then((data) => {
+        const { vendorStaffPasswordSet: setFlag, ...rest } = data;
+        setS(rest);
+        setStaffPasswordSet(Boolean(setFlag));
+      })
+      .catch((e) => toast.error(e.message));
   }, []);
 
   function patch(key: string, value: string) {
@@ -620,8 +660,16 @@ function Settings() {
     if (saving) return;
     setSaving(true);
     try {
-      const data = await api<Record<string, string>>("/api/admin/settings", { method: "PUT", json: s });
+      const body: Record<string, string> = { ...s };
+      delete body.vendorStaffPasswordSet;
+      if (staffPassword.trim()) body.vendorStaffPassword = staffPassword.trim();
+      const data = await api<Record<string, string> & { vendorStaffPasswordSet?: boolean }>("/api/admin/settings", {
+        method: "PUT",
+        json: body,
+      });
       setS(data);
+      setStaffPassword("");
+      setStaffPasswordSet(Boolean(data.vendorStaffPasswordSet));
       bumpCatalog();
       await refreshSettings();
       toast.success("Settings saved");
@@ -753,6 +801,27 @@ function Settings() {
             />
           </Field>
         </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Staff vendor access"
+        body="Inner company staff can sign into any vendor panel with that kitchen’s email and this shared password. Vendors keep their own passwords."
+      >
+        <Field label="Shared staff password">
+          <Input
+            className="h-12 rounded-2xl"
+            type="password"
+            autoComplete="new-password"
+            value={staffPassword}
+            onChange={(e) => setStaffPassword(e.target.value)}
+            placeholder={staffPasswordSet ? "Leave blank to keep the current password" : "At least 8 characters"}
+          />
+        </Field>
+        <p className="text-xs text-muted-foreground">
+          {staffPasswordSet
+            ? "A staff password is set. Staff go to Vendor login, enter the vendor email, and use this password."
+            : "No staff password yet. Set one here, then staff can open every vendor panel with it."}
+        </p>
       </SettingsSection>
 
       <SettingsSection title="Orders" body="Customer checkout uses these values.">

@@ -1,4 +1,4 @@
-import { frw } from "@/lib/api";
+import { frw, img } from "@/lib/api";
 import type { Settings } from "./customer";
 import { deliveryAmount } from "./heroContent";
 
@@ -186,7 +186,7 @@ export function aboutFromSettings(settings: Settings, liveKitchens = 0): AboutCo
     primaryHref: settings.aboutPrimaryHref || "/",
     secondaryButton: settings.aboutSecondaryButton || "Become a partner",
     secondaryHref: settings.aboutSecondaryHref || "/become-a-partner",
-    heroImage: settings.aboutHeroImageUrl || DEFAULT_ABOUT_HERO_IMAGE,
+    heroImage: img(settings.aboutHeroImageUrl || DEFAULT_ABOUT_HERO_IMAGE),
     stats: parseAboutStats(settings.aboutStats).map((row) => ({
       label: row.label,
       value: tpl(row.value),

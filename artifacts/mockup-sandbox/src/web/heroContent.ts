@@ -1,5 +1,5 @@
 import type { Settings } from "./customer";
-import { frw } from "@/lib/api";
+import { frw, img } from "@/lib/api";
 
 export const DEFAULT_HERO_IMAGES = {
   main: "https://images.unsplash.com/photo-1551183053-bf91a1d81141?auto=format&fit=crop&w=900&q=80",
@@ -81,16 +81,16 @@ export function heroFromSettings(settings: Settings): HeroContent {
     primaryHref: settings.heroPrimaryHref || "",
     secondaryButton: settings.heroSecondaryButton || "Explore Menu",
     secondaryHref: settings.heroSecondaryHref || "/menu",
-    mainImage: settings.heroImageUrl || DEFAULT_HERO_IMAGES.main,
-    badgeImage: settings.heroBadgeImageUrl || DEFAULT_HERO_IMAGES.badge,
+    mainImage: img(settings.heroImageUrl || DEFAULT_HERO_IMAGES.main),
+    badgeImage: img(settings.heroBadgeImageUrl || DEFAULT_HERO_IMAGES.badge),
     badgeTitle: settings.heroBadgeTitle || "Fast Delivery",
     badgeSubtitle: settings.heroBadgeSubtitle || "30 mins",
     customersText: settings.heroCustomersText || "10K+ Happy Customers",
     ratingText: settings.heroRatingText || "4.9 rating",
     avatars: [
-      settings.heroAvatar1 || DEFAULT_HERO_IMAGES.avatars[0],
-      settings.heroAvatar2 || DEFAULT_HERO_IMAGES.avatars[1],
-      settings.heroAvatar3 || DEFAULT_HERO_IMAGES.avatars[2],
+      img(settings.heroAvatar1 || DEFAULT_HERO_IMAGES.avatars[0]),
+      img(settings.heroAvatar2 || DEFAULT_HERO_IMAGES.avatars[1]),
+      img(settings.heroAvatar3 || DEFAULT_HERO_IMAGES.avatars[2]),
     ],
     topBannerText: settings.topBannerText || "Free delivery on orders over 25,000 FRw",
     topBannerTagline: settings.topBannerTagline || "Good Food, Delivered Fast 🍕",

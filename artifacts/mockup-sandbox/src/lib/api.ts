@@ -52,8 +52,8 @@ export function candidateApiBases(): string[] {
   };
 
   const stored = readStoredBase();
-  if (stored !== null) add(stored);
-  if (envBase) add(envBase);
+  if (stored !== null) add(sanitizeApiBase(stored));
+  if (envBase) add(sanitizeApiBase(envBase));
 
   add(""); // same origin — Apache/PHP or Vite proxy
 
@@ -67,10 +67,16 @@ export function candidateApiBases(): string[] {
   return out;
 }
 
+function sanitizeApiBase(base: string) {
+  const n = String(base || "").trim().replace(/\/$/, "");
+  if (!n || n === "http:" || n === "https:" || n === "http://" || n === "https://") return "";
+  return n;
+}
+
 function initialApiBase(): string {
   const stored = readStoredBase();
-  if (stored !== null) return stored;
-  if (envBase) return envBase;
+  if (stored !== null) return sanitizeApiBase(stored);
+  if (envBase) return sanitizeApiBase(envBase);
   return "";
 }
 
@@ -78,7 +84,7 @@ function initialApiBase(): string {
 export let API_BASE = initialApiBase();
 
 export function setApiBase(base: string) {
-  API_BASE = base.replace(/\/$/, "");
+  API_BASE = sanitizeApiBase(base);
   writeStoredBase(API_BASE);
 }
 
@@ -94,9 +100,24 @@ function joinBase(base: string, path: string): string {
   return `${base}${normalized}`;
 }
 
+function uploadPathFrom(raw: string): string | null {
+  const hostMatch = raw.match(/^https?:\/\/uploads\/+([^/?#]+)/i);
+  if (hostMatch) return `/uploads/${hostMatch[1]}`;
+  const pathMatch = raw.match(/(?:^|\/)uploads\/([^/?#]+)/i);
+  if (pathMatch) return `/uploads/${pathMatch[1]}`;
+  if (/^[\w.-]+\.(jpe?g|png|webp|gif|svg|pdf)$/i.test(raw)) return `/uploads/${raw}`;
+  return null;
+}
+
 function rewriteBackendUrl(url: string): string {
+  const upload = uploadPathFrom(url);
+  if (upload) return apiUrl(upload);
   try {
     const parsed = new URL(url);
+    if (parsed.hostname === "uploads") {
+      const file = parsed.pathname.replace(/^\//, "");
+      return file ? apiUrl(`/uploads/${file}`) : PHOTO;
+    }
     if (parsed.hostname.replace(/^www\./, "") === DEFAULT_API_HOST) {
       return apiUrl(`${parsed.pathname}${parsed.search}`);
     }
@@ -240,11 +261,9 @@ export function img(src?: string | null) {
   const rawSrc = String(src).trim();
   if (!rawSrc) return PHOTO;
   if (rawSrc.startsWith("data:") || rawSrc.startsWith("blob:")) return rawSrc;
-  if (/^https?:\/\//i.test(rawSrc)) return rewriteBackendUrl(rawSrc);
-  if (rawSrc.startsWith("/uploads") || rawSrc.startsWith("uploads/")) {
-    const path = rawSrc.startsWith("/") ? rawSrc : `/${rawSrc}`;
-    return apiUrl(path);
-  }
+  const upload = uploadPathFrom(rawSrc.replace(/^\/+/, "").startsWith("uploads/") ? `/${rawSrc.replace(/^\/+/, "")}` : rawSrc);
+  if (upload) return apiUrl(upload);
+  if (/^https?:\/\//i.test(rawSrc) || rawSrc.startsWith("//")) return rewriteBackendUrl(rawSrc.startsWith("//") ? `https:${rawSrc}` : rawSrc);
   if (rawSrc.startsWith("/")) return apiUrl(rawSrc);
   return rawSrc;
 }

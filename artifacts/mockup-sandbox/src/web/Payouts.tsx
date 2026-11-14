@@ -46,6 +46,15 @@ function providerFromPhone(phone: string) {
   return local.startsWith("072") || local.startsWith("073") ? "63514" : "63510";
 }
 
+function payoutAmount(raw: string) {
+  const value = Number(String(raw || "").replace(/[^\d.]/g, ""));
+  return Number.isFinite(value) ? Math.round(value) : 0;
+}
+
+/** Vendor earnings withdrawals start at 400 FRw. Admin commission can use the gateway floor. */
+const VENDOR_MIN_PAYOUT = 400;
+const ADMIN_MIN_PAYOUT = 100;
+
 function providerStatus(p: PayoutRow) {
   const x = String(p.xentriStatus || "").toUpperCase();
   if (x) return x;
@@ -121,15 +130,21 @@ export function PayoutsPage({ role }: { role: "vendor" | "admin" }) {
     setProvider(providerFromPhone(p.msisdn || ""));
   }
 
+  const minPayout = role === "vendor" ? VENDOR_MIN_PAYOUT : ADMIN_MIN_PAYOUT;
+
   async function validateName() {
     if (busy) return;
     if (!msisdn.trim()) {
       toast.error("Enter the Mobile Money number first");
       return;
     }
-    const value = Number(amount);
-    if (!Number.isFinite(value) || value < 100) {
-      toast.error("Enter an amount of at least 100 FRw");
+    const value = payoutAmount(amount);
+    if (!Number.isFinite(value) || value < minPayout) {
+      toast.error(
+        role === "vendor"
+          ? `Vendors can withdraw from ${VENDOR_MIN_PAYOUT} FRw and above`
+          : `Enter an amount of at least ${ADMIN_MIN_PAYOUT} FRw`,
+      );
       return;
     }
     setBusy(true);
@@ -142,9 +157,9 @@ export function PayoutsPage({ role }: { role: "vendor" | "admin" }) {
       }>("/api/payouts/lookup", {
         method: "POST",
         json: {
-          msisdn,
-          amount: Number(amount),
-          telecomProviderId: provider,
+          msisdn: msisdn.trim(),
+          amount: value,
+          telecomProviderId: providerFromPhone(msisdn),
         },
       });
       setMsisdn(result.local);
@@ -172,11 +187,11 @@ export function PayoutsPage({ role }: { role: "vendor" | "admin" }) {
     setBusy(true);
     try {
       const payload = {
-        amount: Number(amount),
-        msisdn,
+        amount: payoutAmount(amount),
+        msisdn: msisdn.trim(),
         recipientName: recipientName.trim(),
         expectedName: recipientName.trim(),
-        telecomProviderId: provider,
+        telecomProviderId: providerFromPhone(msisdn),
         confirmed: true,
       };
       const res =
@@ -240,7 +255,12 @@ export function PayoutsPage({ role }: { role: "vendor" | "admin" }) {
       <div className="rounded-2xl border border-amber-200 bg-[#fff6d8] px-5 py-4 text-sm text-[#5c4b12]">
         <p className="font-bold">How payouts work</p>
         <ol className="mt-2 list-decimal space-y-1 pl-5">
-          <li>Enter the recipient phone and the amount (minimum 100 FRw).</li>
+          <li>
+            Enter the recipient phone and the amount
+            {role === "vendor"
+              ? ` (minimum ${VENDOR_MIN_PAYOUT} FRw from your earnings).`
+              : ` (minimum ${ADMIN_MIN_PAYOUT} FRw).`}
+          </li>
           <li>Click <strong>Validate name</strong>. The registered MoMo name on that number fills in automatically.</li>
           <li>Check the name, tick confirm, and send.</li>
           <li>Approve the OTP sent to the XentriPay business email or phone, then refresh status.</li>
@@ -363,7 +383,7 @@ export function PayoutsPage({ role }: { role: "vendor" | "admin" }) {
               className="h-12 rounded-2xl"
               inputMode="numeric"
               value={amount}
-              placeholder="5000"
+              placeholder={String(minPayout)}
               onChange={(e) => {
                 setAmount(e.target.value);
                 setLookedUp(false);
@@ -372,6 +392,11 @@ export function PayoutsPage({ role }: { role: "vendor" | "admin" }) {
               }}
             />
           </Field>
+          <p className="text-xs text-muted-foreground">
+            {role === "vendor"
+              ? `Minimum withdrawal from your earnings is ${VENDOR_MIN_PAYOUT} FRw.`
+              : `Minimum amount is ${ADMIN_MIN_PAYOUT} FRw.`}
+          </p>
           <Field label="Registered MoMo name">
             <Input
               className="h-12 rounded-2xl bg-muted/30"
@@ -382,7 +407,7 @@ export function PayoutsPage({ role }: { role: "vendor" | "admin" }) {
           </Field>
           <GhostBtn
             type="button"
-            disabled={busy || !msisdn.trim() || !amount || Number(amount) < 100}
+            disabled={busy || !msisdn.trim() || payoutAmount(amount) < minPayout}
             onClick={() => void validateName()}
           >
             {busy ? "Checking…" : "Validate name"}

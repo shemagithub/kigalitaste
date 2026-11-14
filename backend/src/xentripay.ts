@@ -38,6 +38,9 @@ export const PROVIDERS = [
   { id: "63514", name: "Airtel Rwanda" },
 ] as const;
 
+/** Vendors can only withdraw earnings from this amount upward. */
+export const VENDOR_MIN_PAYOUT = 400;
+
 export function paymentsConfigured() {
   return Boolean(KEY());
 }
@@ -121,10 +124,44 @@ export function verifyWebhookSignature(raw: Buffer, secret: string, header: stri
   return timingSafeEqual(a, b);
 }
 
+type XpError = Error & { status?: number; payload?: Record<string, unknown> };
+
+function flattenXpText(data: Record<string, unknown>, raw: string) {
+  const texts: string[] = [];
+  const add = (value: unknown) => {
+    const text = String(value || "").trim();
+    if (text && text !== "[object Object]" && !texts.includes(text)) texts.push(text);
+  };
+  add(data.message);
+  add(data.error);
+  add(data.reply);
+  add(data.statusMessage);
+  add(data.detail);
+  const nested = data.data;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    const row = nested as Record<string, unknown>;
+    add(row.message);
+    add(row.error);
+    add(row.statusMessage);
+  }
+  if (Array.isArray(data.errors)) {
+    for (const item of data.errors) {
+      if (typeof item === "string") add(item);
+      else if (item && typeof item === "object") {
+        const row = item as Record<string, unknown>;
+        add(row.message || row.error || row.msg);
+      }
+    }
+  } else if (data.errors && typeof data.errors === "object") {
+    for (const value of Object.values(data.errors as Record<string, unknown>)) add(value);
+  }
+  const joined = texts.join(" — ");
+  if (joined) return joined.slice(0, 400);
+  return raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
+}
+
 function xpMessage(data: Record<string, unknown>, status: number, raw: string) {
-  const text =
-    String(data.message || data.error || data.reply || data.statusMessage || "").trim() ||
-    raw.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 180);
+  const text = flattenXpText(data, raw);
   if (status === 401 || status === 403) {
     return text && !/^invalid or disabled api key$/i.test(text)
       ? text
@@ -153,9 +190,10 @@ async function xpOnce<T>(base: string, path: string, init: RequestInit, key: str
     data = { message: raw.slice(0, 180) };
   }
   if (!res.ok) {
-    console.error("XentriPay", res.status, path, String(data.message || data.error || "").slice(0, 120));
-    const err = new Error(xpMessage(data, res.status, raw)) as Error & { status?: number };
+    console.error("XentriPay", res.status, path, String(data.message || data.error || "").slice(0, 180));
+    const err = new Error(xpMessage(data, res.status, raw)) as XpError;
     err.status = res.status;
+    err.payload = data;
     throw err;
   }
   return data as T;
@@ -338,16 +376,19 @@ export function payoutReference() {
   return `PAY-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
 }
 
-export function preparePayout(msisdn: string, amount: unknown, telecomProviderId?: string) {
+function moneyAmount(amount: unknown) {
+  if (typeof amount === "number") return Math.round(amount);
+  const value = Number(String(amount ?? "").replace(/[^\d.]/g, ""));
+  return Number.isFinite(value) ? Math.round(value) : NaN;
+}
+
+export function preparePayout(msisdn: string, amount: unknown, _telecomProviderId?: string) {
   const phones = rwandaPhones(msisdn);
-  const value = Math.round(Number(amount));
+  const value = moneyAmount(amount);
   if (!Number.isFinite(value) || value < 100) {
     throw new Error("Amount must be at least 100 RWF");
   }
-  const provider = String(telecomProviderId || guessProviderId(phones.local));
-  if (provider !== "63510" && provider !== "63514") {
-    throw new Error("Use MTN Mobile Money (63510) or Airtel Rwanda (63514)");
-  }
+  const provider = guessProviderId(phones.local);
   return {
     local: phones.local,
     providerId: provider,
@@ -382,18 +423,78 @@ function pickName(data: unknown, depth = 0): string {
 }
 
 export function parseRegisteredNameHint(message: string) {
-  const text = String(message || "").trim();
+  const text = String(message || "").replace(/\s+/g, " ").trim();
   if (!text) return "";
   const patterns = [
     /correct registered name is\s*:?\s*(.+)/i,
     /registered name is\s*:?\s*(.+)/i,
+    /account holder(?:'s)? name is\s*:?\s*(.+)/i,
+    /validated(?: account)? name is\s*:?\s*(.+)/i,
     /account name is\s*:?\s*(.+)/i,
+    /name should be\s*:?\s*(.+)/i,
+    /expected name\s*:?\s*(.+)/i,
+    /does not match[^:]*:\s*(.+)/i,
   ];
   for (const pattern of patterns) {
     const match = pattern.exec(text);
-    if (match?.[1]) return match[1].trim().replace(/[.\s]+$/, "");
+    if (match?.[1]) {
+      const name = match[1].replace(/\s+[—.–-]\s+.*$/, "").trim().replace(/[.\s]+$/, "");
+      if (name && !/^recipient$/i.test(name) && name.length >= 2) return name;
+    }
   }
   return "";
+}
+
+function nameFromXpError(err: unknown) {
+  const xpErr = err as XpError;
+  const payload = xpErr.payload || {};
+  return (
+    pickName(payload) ||
+    parseRegisteredNameHint(xpErr.message || "") ||
+    parseRegisteredNameHint(JSON.stringify(payload))
+  );
+}
+
+function isRetryablePayoutError(err: unknown) {
+  const message = String((err as Error).message || "");
+  return /timed out|timeout|i\/o error|validateAccount|unavailable|ECONNRESET|ETIMEDOUT|503|502/i.test(
+    message,
+  );
+}
+
+async function withPayoutRetry<T>(run: () => Promise<T>): Promise<T> {
+  let last: unknown;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      return await run();
+    } catch (err) {
+      last = err;
+      if (!isRetryablePayoutError(err) || attempt === 3) throw err;
+      await new Promise((resolve) => setTimeout(resolve, 1200 * attempt));
+    }
+  }
+  throw last;
+}
+
+function friendlyPayoutError(err: unknown) {
+  const message = String((err as Error).message || "").trim();
+  const lower = message.toLowerCase();
+  if (/i\/o error|timed out|validateaccount/i.test(lower)) {
+    return "XentriPay is busy validating this Mobile Money number. Wait a few seconds and click Validate name again.";
+  }
+  if (/mtn number|airtel number|select the (mtn|airtel) provider/i.test(lower)) {
+    return message;
+  }
+  if (/insufficient|float|not enough|balance/i.test(lower)) {
+    return "XentriPay does not have enough float to pay this amount. Top up the live merchant wallet, then try again.";
+  }
+  if (/invalid (msisdn|number|phone)|customer number/i.test(lower)) {
+    return "That Mobile Money number is not valid. Use a 10-digit Rwanda number like 0788302208.";
+  }
+  if (/otp/i.test(lower) && /pending|required|confirm/i.test(lower)) {
+    return message;
+  }
+  return message || "XentriPay could not validate this payout.";
 }
 
 function storeNameDraft(
@@ -496,7 +597,7 @@ export async function lookupMomoName(
       customerReference,
       telecomProviderId: ready.providerId,
       msisdn: ready.local,
-      name: expected || "Recipient",
+      name: expected || "XENTRIPAY LOOKUP",
       amount: ready.amount,
     });
     const registered = String(sent.validatedAccountName || pickName(sent) || "").trim();
@@ -504,22 +605,17 @@ export async function lookupMomoName(
       throw new Error("XentriPay did not return a registered name for this number");
     }
     const match = !expected || namesMatch(expected, registered);
-    const draft = storeNameDraft(ready, registered, {
-      customerReference: sent.customerReference || customerReference,
-      internalRef: sent.internalRef || null,
-      status: sent.status || "PENDING",
-      statusMessage: sent.statusMessage,
-    });
+    storeNameDraft(ready, registered);
     return {
       ...base,
       name: registered,
       lookedUp: true,
       match,
-      customerReference: draft.customerReference,
+      customerReference: "",
     };
   } catch (err) {
-    const hint = parseRegisteredNameHint((err as Error).message);
-    if (!hint) throw err;
+    const hint = nameFromXpError(err);
+    if (!hint) throw new Error(friendlyPayoutError(err));
     const match = !expected || namesMatch(expected, hint);
     storeNameDraft(ready, hint);
     return {
@@ -532,8 +628,17 @@ export async function lookupMomoName(
   }
 }
 
-export async function initiatePayout(body: Record<string, unknown>) {
-  return xp<{
+export async function initiatePayout(body: {
+  customerReference: string;
+  telecomProviderId: string;
+  msisdn: string;
+  name: string;
+  amount: number;
+}) {
+  const amount = Math.round(Number(body.amount));
+  const name = String(body.name || "").trim();
+  if (!name) throw new Error("Recipient name is required");
+  return withPayoutRetry(() => xp<{
     id?: number;
     customerReference?: string;
     status?: string;
@@ -545,12 +650,15 @@ export async function initiatePayout(body: Record<string, unknown>) {
   }>("/api/payment-requests", {
     method: "POST",
     body: JSON.stringify({
-      ...body,
+      customerReference: String(body.customerReference),
+      telecomProviderId: String(body.telecomProviderId),
+      msisdn: String(body.msisdn),
+      name,
       transactionType: "PAYOUT",
       currency: "RWF",
-      amount: Math.round(Number(body.amount)),
+      amount,
     }),
-  });
+  }, 40000));
 }
 
 export async function payoutStatus(customerReference: string) {

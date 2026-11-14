@@ -40,7 +40,7 @@ const VENDOR_PAGES = VENDOR_NAV.map(([id]) => id);
 
 export function VendorApp() {
   const [loc, setLoc] = useLocation();
-  const { user, logout, ready } = useAuth();
+  const { user, logout, ready, impersonating, staffAccess, returnToAdmin } = useAuth();
   const path = (loc.split("?")[0] || "/vendor").replace(/\/$/, "") || "/vendor";
   const slug = path.replace(/^\/vendor\/?/, "") || "dashboard";
   const tab = VENDOR_PAGES.includes(slug) ? slug : "dashboard";
@@ -57,16 +57,42 @@ export function VendorApp() {
     return <VendorLogin onDone={() => setLoc("/vendor/dashboard")} />;
   }
 
+  function backToAdmin() {
+    if (returnToAdmin()) {
+      toast.success("Back in admin");
+      setLoc("/admin/vendors");
+      return;
+    }
+    logout();
+    setLoc("/vendor/login");
+  }
+
   return (
     <PanelShell
       title="Vendor"
       basePath="/vendor"
       nav={VENDOR_NAV}
       tab={tab}
-      onLogout={() => {
-        logout();
-        setLoc("/vendor/login");
-      }}
+      logoutLabel={impersonating ? "Return to admin" : "Log out"}
+      onLogout={backToAdmin}
+      banner={
+        impersonating ? (
+          <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between">
+            <p>
+              You are in <strong>{impersonating.vendorName}</strong>’s vendor panel from admin. Their password was not
+              used.
+            </p>
+            <Btn type="button" variant="panel" size="sm" className="shrink-0" onClick={backToAdmin}>
+              Return to admin
+            </Btn>
+          </div>
+        ) : staffAccess ? (
+          <div className="mb-4 rounded-2xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-950">
+            Signed in to <strong>{staffAccess.vendorName}</strong> with the company staff password. The vendor’s own
+            password was not used.
+          </div>
+        ) : null
+      }
     >
       {tab === "dashboard" && <Dash />}
       {tab === "shop" && <Shop />}
@@ -123,6 +149,10 @@ function VendorLogin({ onDone }: { onDone: () => void }) {
     <div className="panel flex min-h-screen items-center justify-center p-4">
       <Card className="w-full max-w-md space-y-4">
         <h1 className="text-2xl font-extrabold">Vendor login</h1>
+        <p className="text-sm text-muted-foreground">
+          Vendors use their own password. Company staff can sign in to any kitchen with that vendor’s email and the
+          shared staff password from Admin → Settings.
+        </p>
         <form className="space-y-3" onSubmit={(e) => void submit(e)}>
           <Field label="Email">
             <Input value={email} onChange={(e) => setEmail(e.target.value)} />

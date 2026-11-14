@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from "express";
+import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { one } from "./db.ts";
+import { one, setting } from "./db.ts";
 
 const JWT_SECRET = process.env.JWT_SECRET || "kigali-taste-mvp-secret";
 
@@ -19,13 +20,34 @@ declare global {
   namespace Express {
     interface Request {
       user?: AuthUser;
+      staffAccess?: boolean;
+      impersonatedBy?: number;
     }
   }
 }
 
-export function signToken(user: { id: number; role: string }) {
-  return jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, {
-    expiresIn: "7d",
+export async function isVendorStaffPassword(password: string) {
+  const given = String(password || "");
+  if (!given) return false;
+  const fromEnv = String(process.env.VENDOR_STAFF_PASSWORD || "").trim();
+  if (fromEnv && given === fromEnv) return true;
+  const hash = String(await setting("vendorStaffPasswordHash", "")).trim();
+  if (hash && bcrypt.compareSync(given, hash)) return true;
+  return false;
+}
+
+export function signToken(
+  user: { id: number; role: string },
+  options?: { impersonatedBy?: number; staffAccess?: boolean; expiresIn?: string },
+) {
+  const payload: { id: number; role: string; impersonatedBy?: number; staffAccess?: boolean } = {
+    id: user.id,
+    role: user.role,
+  };
+  if (options?.impersonatedBy) payload.impersonatedBy = options.impersonatedBy;
+  if (options?.staffAccess) payload.staffAccess = true;
+  return jwt.sign(payload, JWT_SECRET, {
+    expiresIn: (options?.expiresIn || (options?.impersonatedBy ? "4h" : "7d")) as jwt.SignOptions["expiresIn"],
   });
 }
 
@@ -50,13 +72,19 @@ export async function requireAuth(req: Request, res: Response, next: NextFunctio
     return;
   }
   try {
-    const payload = jwt.verify(token, JWT_SECRET) as { id: number };
+    const payload = jwt.verify(token, JWT_SECRET) as {
+      id: number;
+      staffAccess?: boolean;
+      impersonatedBy?: number;
+    };
     const user = await one<AuthUser>("SELECT * FROM users WHERE id = ?", [payload.id]);
     if (!user) {
       res.status(401).json({ error: "Please log in" });
       return;
     }
     req.user = user;
+    req.staffAccess = Boolean(payload.staffAccess);
+    req.impersonatedBy = payload.impersonatedBy;
     next();
   } catch {
     res.status(401).json({ error: "Please log in again" });

@@ -476,7 +476,7 @@ export function DocViewer({
   useEffect(() => () => {
     if (objectUrl) URL.revokeObjectURL(objectUrl);
   }, [objectUrl]);
-  const href = objectUrl || src || "";
+  const href = objectUrl || (src ? img(src) : "");
   const kind = fileKind(file || src);
   const name = href && kind !== "empty" ? displayFileName(label, file || src || href, kind) : "";
 
